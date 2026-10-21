@@ -4,10 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VIX Dashboard</title>
+<script>
+  // Apply the saved theme before the page paints, so there is no flash.
+  (function () {
+    var t = localStorage.getItem("vix_theme") ||
+            (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
 <style>
   :root {
-    --bg:#0f1419; --panel:#171e26; --line:#26313d; --text:#e6edf3; --muted:#8b98a5;
-    --green:#3fb950; --amber:#d29922; --red:#f85149; --blue:#58a6ff;
+    --bg:#000000; --panel:#121414; --line:#23272a; --text:#f4f6f5; --muted:#9ba3a0;
+    --track:#0b0d0d; --button-text:#03140a; --blue:#00d64f;
+    /* gauge colours are the same in both themes */
+    --green:#3fb950; --amber:#d29922; --red:#f85149;
+  }
+  html[data-theme="light"] {
+    --bg:#f4f5f3; --panel:#ffffff; --line:#e4e7e3; --text:#0d1210; --muted:#667069;
+    --track:#eef0ec; --button-text:#ffffff; --blue:#00803c;
   }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
@@ -17,7 +31,7 @@
   header h1 { margin:0; font-size:20px; font-weight:600; }
   .meta { color:var(--muted); font-size:12px; }
   main { padding:16px 24px 40px; display:grid; gap:16px; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; }
   h2 { margin:0 0 12px; font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:600; }
   .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); }
   .card { text-align:center; }
@@ -27,7 +41,7 @@
   .sub { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
   .bars { display:grid; gap:8px; }
   .bar-row { display:grid; grid-template-columns:130px 1fr 70px; align-items:center; gap:10px; font-variant-numeric:tabular-nums; }
-  .bar-track { background:#0c1117; border-radius:4px; height:18px; overflow:hidden; }
+  .bar-track { background:var(--track); border-radius:6px; height:18px; overflow:hidden; }
   .bar-fill { height:100%; background:var(--blue); }
   .bar-val { text-align:right; }
   .note { font-size:11px; color:var(--muted); margin:10px 0 0; }
@@ -38,12 +52,21 @@
   th { color:var(--muted); font-weight:500; }
   details summary { cursor:pointer; color:var(--muted); font-size:12px; }
   .spark { width:100%; height:60px; }
+  header { border-bottom:none; }
+  header h1 { font-size:22px; letter-spacing:-.01em; }
+  .theme-toggle { background:var(--blue); color:var(--button-text); border:0; border-radius:999px;
+                  padding:8px 16px; font-weight:600; font-size:13px; font-family:inherit; cursor:pointer; }
+  .theme-toggle:hover { opacity:.9; }
+  details summary { cursor:pointer; color:var(--muted); font-size:12px; }
 </style>
 </head>
 <body>
 <header>
   <h1>VIX Dashboard</h1>
+  <button id="themeToggle" class="theme-toggle" type="button">Light mode</button>
   <div class="meta" id="meta">Loading…</div>
+  <div class="meta" id="sched"></div>
+  <div class="meta" id="countdown"></div>
 </header>
 
 <main>
@@ -99,7 +122,7 @@ async function loadAll() {
       ? { data: s.data, error: null }
       : { data: null, error: loadErr || "missing from series.json" };
   }
-  return { R, updated: pre ? pre.updated_utc : null };
+  return { R, updated: pre ? pre.updated_utc : null, cron: pre ? pre.schedule_cron : null };
 }
 
 // =====================================================================
@@ -163,7 +186,7 @@ function ivpAt(vixArr, i) {
 // =====================================================================
 const fmt = (v, d = 2) => (v == null || isNaN(v)) ? "n/a" : Number(v).toFixed(d);
 
-function gaugeHTML(g, label, unit = "") {
+function gaugeHTML(g, label, unit = "", invert = false) {
   if (!g) return `<div class="card"><div class="val na">n/a</div><div class="name">${label}</div><div class="sub">unavailable</div></div>`;
   const W = 200, H = 120, cx = 100, cy = 105, r = 80;
   const p = Math.max(0, Math.min(1, g.pct / 100));
@@ -174,7 +197,9 @@ function gaugeHTML(g, label, unit = "") {
     const x1 = cx + r * Math.cos(a1), y1 = cy - r * Math.sin(a1);
     return `<path d="M${x0},${y0} A${r},${r} 0 0 1 ${x1},${y1}" stroke="${c}" stroke-width="12" fill="none"/>`;
   };
-  const color = p < 0.33 ? "var(--green)" : p < 0.66 ? "var(--amber)" : "var(--red)";
+  const color = invert
+    ? (p < 0.33 ? "var(--red)" : p < 0.66 ? "var(--amber)" : "var(--green)")
+    : (p < 0.33 ? "var(--green)" : p < 0.66 ? "var(--amber)" : "var(--red)");
   return `<div class="card">
     <svg class="gauge" viewBox="0 0 ${W} ${H}">
       ${arc(Math.PI, Math.PI*2/3, "#1d4d2a")}${arc(Math.PI*2/3, Math.PI/3, "#4d3d18")}${arc(Math.PI/3, 0, "#4d1f1d")}
@@ -232,6 +257,78 @@ function sparkSVG(vals, color) {
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
 }
 
+// Turns a cron expression (in UTC) into a readable update schedule in Eastern time.
+function describeCron(c) {
+  if (!c) return "schedule not available yet";
+  const [min, hr, , , dow] = c.trim().split(/\s+/);
+  const etHour = h => {
+    const d = new Date();
+    d.setUTCHours(h, 0, 0, 0);
+    return d.toLocaleTimeString("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" });
+  };
+  let mins;
+  const step = min.match(/^\*\/(\d+)$/);
+  if (step) mins = `every ${step[1]} min`;
+  else if (min === "*") mins = "every minute";
+  else mins = "once a day";
+  let hrs = "";
+  const range = hr.match(/^(\d+)-(\d+)$/);
+  if (range) hrs = `, ${etHour(+range[1])} to ${etHour(+range[2])} ET`;
+  else if (/^\d+$/.test(hr)) hrs = `, at ${etHour(+hr)} ET`;
+  const days = dow === "1-5" ? ", weekdays" : dow === "*" ? ", every day" : "";
+  return `updates ${mins}${hrs}${days}`;
+}
+
+// Matches one cron field against a value: "*", "*/N", "A-B", or a single number.
+function cronMatch(field, value) {
+  if (field === "*") return true;
+  const step = field.match(/^\*\/(\d+)$/);
+  if (step) return value % +step[1] === 0;
+  const range = field.match(/^(\d+)-(\d+)$/);
+  if (range) return value >= +range[1] && value <= +range[2];
+  return +field === value;
+}
+
+// Next UTC time the cron expression fires, after `from`. Cron hours and days are UTC.
+function nextRun(c, from = new Date()) {
+  const [min, hr, , , dow] = c.trim().split(/\s+/);
+  const t = new Date(from.getTime());
+  t.setUTCSeconds(0, 0);
+  t.setUTCMinutes(t.getUTCMinutes() + 1);
+  for (let i = 0; i < 60 * 24 * 10; i++) {
+    if (cronMatch(min, t.getUTCMinutes()) && cronMatch(hr, t.getUTCHours()) && cronMatch(dow, t.getUTCDay())) return t;
+    t.setUTCMinutes(t.getUTCMinutes() + 1);
+  }
+  return null;
+}
+
+let countdownTimer = null;
+function startCountdown(c) {
+  clearInterval(countdownTimer);
+  const el = document.getElementById("countdown");
+  const next = c ? nextRun(c) : null;
+  if (!next) { el.textContent = ""; return; }
+
+  const fmtLeft = ms => {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const pad = n => String(n).padStart(2, "0");
+    return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : `${m}m ${pad(sec)}s`;
+  };
+  const tick = () => {
+    const ms = next - new Date();
+    if (ms <= 0) {
+      el.textContent = "Next update: running now…";
+      clearInterval(countdownTimer);
+      setTimeout(load, 90000);   // give the workflow time to finish, then reload the data
+      return;
+    }
+    el.textContent = `Next update in ${fmtLeft(ms)}`;
+  };
+  tick();
+  countdownTimer = setInterval(tick, 1000);
+}
+
 function renderStatus(R) {
   document.getElementById("status").innerHTML = Object.entries(R).map(([k, r]) =>
     `<tr><td>${SYMBOLS[k].label}</td><td>${SYMBOLS[k].sym}</td>
@@ -245,7 +342,9 @@ function renderStatus(R) {
 async function load() {
   const meta = document.getElementById("meta");
   const app = document.getElementById("app");
-  const { R, updated } = await loadAll();
+  const { R, updated, cron } = await loadAll();
+  document.getElementById("sched").textContent = describeCron(cron);
+  startCountdown(cron);
   renderStatus(R);
 
   const d = k => R[k].data;
@@ -309,7 +408,7 @@ async function load() {
       { k: "Spot (30-day)", days: 30, v: vix[n - 1] },
       { k: "3-month", days: 91, v: last("vix3m") },
       { k: "6-month", days: 182, v: last("vix6m") },
-    ]), "Plotted by days to expiry. Yahoo does not provide the 1-day, front-month, 2-month and 9-month VIX points, so they are left off the curve."),
+    ]), "Plotted by days to expiry."),
 
     sec("Other VIX indicators", `<div class="grid">
       ${gaugeHTML(gRsi, "VIX RSI (14)")}
@@ -320,10 +419,10 @@ async function load() {
 
     sec("Cross-asset indicators", `<div class="grid">
       ${gaugeHTML(gFor("move"), "MOVE index")}
-      ${gaugeHTML(gFor("hy"), "HYG price (HY bond proxy)")}
-      ${gaugeHTML(gFor("gold"), "Gold ($/oz)")}
-      ${gaugeHTML(gFor("wti"), "WTI oil ($/bbl)")}
-      ${gaugeHTML(gFor("copper"), "Copper ($/lb)")}
+      ${gaugeHTML(gFor("hy"), "HYG price (HY bond proxy)", "", true)}
+      ${gaugeHTML(gFor("gold"), "Gold ($/oz)", "", true)}
+      ${gaugeHTML(gFor("wti"), "WTI oil ($/bbl)", "", true)}
+      ${gaugeHTML(gFor("copper"), "Copper ($/lb)", "", true)}
       ${gaugeHTML(gFor("ust10y"), "US 10Y yield", "%")}
     </div>`, "HYG is an ETF price, not the credit spread. It moves opposite to spreads: a falling HYG price means widening spreads."),
 
@@ -335,6 +434,17 @@ async function load() {
     </div>`),
   ].join("");
 }
+
+// Light / dark toggle. The choice is saved in this browser.
+const themeBtn = document.getElementById("themeToggle");
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("vix_theme", t);
+  themeBtn.textContent = t === "light" ? "Dark mode" : "Light mode";
+}
+themeBtn.addEventListener("click", () =>
+  applyTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light"));
+applyTheme(document.documentElement.getAttribute("data-theme") || "dark");
 
 load();
 </script>

@@ -3,7 +3,7 @@ name: Update market data
 on:
   schedule:
     # Weekdays at 22:30 UTC (about 6:30 pm Eastern), after the US close.
-    - cron: "30 22 * * 1-5"
+    - cron: "*/15 13-21 * * 1-5"
   workflow_dispatch:   # lets you run it manually from the Actions tab
 
 permissions:

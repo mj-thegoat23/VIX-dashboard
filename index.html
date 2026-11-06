@@ -336,52 +336,83 @@ function sparkSVG(vals, color) {
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
 }
 
-// Turns a cron expression (in UTC) into a readable update schedule in Eastern time.
-function describeCron(c) {
-  if (!c) return "schedule not available yet";
-  const [min, hr, , , dow] = c.trim().split(/\s+/);
-  const etHour = h => {
-    const d = new Date();
-    d.setUTCHours(h, 0, 0, 0);
-    return d.toLocaleTimeString("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" });
-  };
-  let mins;
-  const step = min.match(/^\*\/(\d+)$/);
-  if (step) mins = `every ${step[1]} min`;
-  else if (min === "*") mins = "every minute";
-  else mins = "once a day";
-  let hrs = "";
-  const range = hr.match(/^(\d+)-(\d+)$/);
-  if (range) hrs = `, ${etHour(+range[1])} to ${etHour(+range[2])} ET`;
-  else if (/^\d+$/.test(hr)) hrs = `, at ${etHour(+hr)} ET`;
-  const days = dow === "1-5" ? ", weekdays" : dow === "*" ? ", every day" : "";
-  return `updates ${mins}${hrs}${days}`;
-}
-
-// Matches one cron field against a value: "*", "*/N", "A-B", or a single number.
-function cronMatch(field, value) {
-  if (field === "*") return true;
-  const step = field.match(/^\*\/(\d+)$/);
-  if (step) return value % +step[1] === 0;
-  const range = field.match(/^(\d+)-(\d+)$/);
-  if (range) return value >= +range[1] && value <= +range[2];
-  return +field === value;
-}
-
-// Next UTC time the cron expression fires, after `from`. Cron hours and days are UTC.
-function nextRun(c, from = new Date()) {
-  const [min, hr, , , dow] = c.trim().split(/\s+/);
-  const t = new Date(from.getTime());
-  t.setUTCSeconds(0, 0);
-  t.setUTCMinutes(t.getUTCMinutes() + 1);
-  for (let i = 0; i < 60 * 24 * 10; i++) {
-    if (cronMatch(min, t.getUTCMinutes()) && cronMatch(hr, t.getUTCHours()) && cronMatch(dow, t.getUTCDay())) return t;
-    t.setUTCMinutes(t.getUTCMinutes() + 1);
+// Expands one cron field ("*", "A,B", "A-B", "*/N", "A-B/N") into the values it matches.
+  function parseField(field, min, max) {
+      const out = new Set();
+      const add = (a, b, s = 1) => { for (let v = a; v <= b; v += s) out.add(v); };
+      for (const part of String(field).trim().split(",")) {
+            const m = part.match(/^(\*|\d+)(?:-(\d+))?(?:\/(\d+))?$/);
+            if (!m) continue;
+            const step = m[3] ? +m[3] : 1;
+            if (m[1] === "*") add(min, max, step);
+            else if (m[2]) add(+m[1], +m[2], step);
+            else if (m[3]) add(+m[1], max, step);
+            else out.add(+m[1]);
+      }
+      return out;
   }
-  return null;
-}
+  // The schedule from schedule_cron in series.json, parsed once.
+  let scheduleCron = "";
+  let schedule = null;
+  function parseSchedule(c) {
+      if (c === scheduleCron && schedule) return schedule;
+      scheduleCron = c;
+      if (!c) { schedule = null; return null; }
+      const [min, hr , dow] = c.trim().split(/\s+/);
+      schedule = { minutes: parseField(min, 0, 59), hours: parseField(hr, 0, 23), weekdays: parseField(dow, 0, 6) };
+      return schedule;
+  }
+  // Formats a UTC hour/minute as an Eastern time, e.g. "5:30 AM".
+  function etTime(utcHour, minute) {
+      const d = new Date();
+      d.setUTCHours(utcHour, minute, 0, 0);
+      return new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" }).format(d);
+  }
 
-let countdownTimer = null;
+  // Short Eastern zone name ("EST" / "EDT") for a date.
+  function etZoneName(d) {
+      const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", timeZoneName: "short" }).formatToParts(d).find(x => x.type === "timeZoneName");
+      return p ? p.value : "";
+  }
+
+  // Turns a cron expression (in UTC) into a readable update schedule in Eastern time.
+  function describeCron(c) {
+      const s = parseSchedule(c);
+      if (!s) return "schedule not available yet";
+      const minute = [..s.minutes].sort((a, b) => a - b)[0] ?? 0;
+      const hours = [..s.hours].sort((a, b) => a - b);
+      const probe = new Date();
+      probe.setUTCHours(hours[0], minute, 0, 0);
+      const zone = etZoneName(probe);
+      const days =  [..s.weekdays].sort((a, b) => a - b).join(",") === "1,2,3,4,5" ? "weekdays" : s.weekdays.size === 7 ? "every day" : "";
+      const times = hours.map(h => etTime(h, minute));
+      const last = times[times.length - 1];
+      const at = times.length > 1 ? `${times.slice(0, -1).map(t => t.replace(/\s?[AP]M$/, "").join(", "), ${last}` : last;
+      const count = s.hours.size;
+      return `Updates ${count} ${count === 1 ? "time" : "times"} a day${days ? `, ${days}` : ""} at ${at}${zone ? ` ${zone}` : ""}`;
+  }
+
+  // True when a UTC date is a scheduled run: matching minute, hour and weekday.
+  function cronMatch(date) {
+      if (!schedule) return false;
+      return schedule.minutes.has(date.getUTCMinutes()) && schedule.hours.has(date.getUTCHours()) && schedule.weekdays.has(date.getUTCDay());
+  }
+
+  // Next UTC time the cron expression fires, after `from`. Cron hours and days are UTC.
+  function nextRun(c, from = new Date()) {
+      if (!parseSchedule(c)) return null;
+      const t = new Date(from.getTime());
+      t.setUTCSeconds(0, 0);
+      t.setUTCMinutes(t.getUTCMinutes() + 1);
+      for (let i = 0; i < 60 * 24 * 10; i++) {
+            if (cronMatch(t)) return t;
+            t.setUTCMinutes(t.getUTCMinutes() + 1);
+      }
+      return null;
+  }
+  
+    
+  let countdownTimer = null;
 function startCountdown(c) {
   clearInterval(countdownTimer);
   const el = document.getElementById("countdown");
@@ -395,14 +426,15 @@ function startCountdown(c) {
     return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : `${m}m ${pad(sec)}s`;
   };
   const tick = () => {
-    const ms = next - new Date();
+        const now = new Date();
+        const ms = cronMatch(now)? 0: next - now;
     if (ms <= 0) {
       el.textContent = "Next update: running now…";
       clearInterval(countdownTimer);
       setTimeout(load, 90000);   // give the workflow time to finish, then reload the data
       return;
     }
-    el.textContent = `Next update in ${fmtLeft(ms)}`;
+        el.textContent = `Next update in ${fmtLeft(ms)}, at ${etTime(next.getUTCHours(), next.getUTCMinutes())} ${etZoneName(next)}`;
   };
   tick();
   countdownTimer = setInterval(tick, 1000);
@@ -501,7 +533,7 @@ async function load() {
     `<section><h2>${title}</h2>${body}${note ? `<p class="note">${note}</p>` : ""}</section>`;
 
   meta.textContent = `Data as of ${dates[n - 1]}` +
-    (updated ? ` · updated ${new Date(updated).toLocaleString()}` : "") +
+      (updated? ` · updated ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Toronto", timeZoneName: "short"}).format(new Date(updated))}`: "") +
     " · gauges show 52-week low/high · dotted needle = 1 month ago";
 
   app.innerHTML = [

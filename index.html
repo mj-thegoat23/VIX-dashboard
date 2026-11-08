@@ -454,6 +454,17 @@ function renderStatus(R) {
 // Main
 // =====================================================================
 async function load() {
+  try {
+    await loadInner();
+  } catch (e) {
+    console.error(e);
+    document.getElementById("meta").textContent = "Error: " + e.message;
+    document.getElementById("app").innerHTML =
+      `<section><p class="bad">${e.message}</p><pre class="why" style="white-space:pre-wrap">${e.stack || ""}</pre></section>`;
+  }
+}
+
+async function loadInner() {
   const meta = document.getElementById("meta");
   const app = document.getElementById("app");
   const { R, updated, cron } = await loadAll();

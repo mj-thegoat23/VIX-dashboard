@@ -546,7 +546,7 @@ async function loadInner() {
     `<section><h2>${title}</h2>${body}${note ? `<p class="note">${note}</p>` : ""}</section>`;
 
   meta.textContent = `Data as of ${dates[n - 1]}` +
-    (updated ? ` · updated ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Toronto", timeZoneName: "short" }).format(new Date(updated))}` : "") +
+    (updated ? ` · updated ${new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "America/Toronto", timeZoneName: "short" }).format(new Date(updated))}` : "") +
     " · gauges show 52-week low/high · dotted needle = 1 month ago";
 
   app.innerHTML = [

@@ -30,9 +30,9 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
          font:14px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif; }
-  header { padding:16px 24px; border-bottom:1px solid var(--line); display:flex;
+  header { padding:16px 24px; display:flex;
            justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
-  header h1 { margin:0; font-size:20px; font-weight:600; }
+  header h1 { margin:0; font-size:22px; font-weight:600; letter-spacing:-.01em; }
   .meta { color:var(--muted); font-size:12px; }
   main { padding:16px 24px 40px; display:grid; gap:16px; }
   section { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; }
@@ -41,13 +41,9 @@
   .card { text-align:center; }
   .gauge { width:100%; max-width:220px; height:auto; }
   .val { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .val.na { color:var(--muted); }
   .name { font-size:12px; color:var(--muted); margin-top:2px; }
   .sub { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
-  .bars { display:grid; gap:8px; }
-  .bar-row { display:grid; grid-template-columns:130px 1fr 70px; align-items:center; gap:10px; font-variant-numeric:tabular-nums; }
-  .bar-track { background:var(--track); border-radius:6px; height:18px; overflow:hidden; }
-  .bar-fill { height:100%; background:var(--blue); }
-  .bar-val { text-align:right; }
   .note { font-size:11px; color:var(--muted); margin:10px 0 0; }
   .ok { color:var(--green); } .bad { color:var(--red); }
   .na { color:var(--muted); }
@@ -59,12 +55,9 @@
   .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin:10px 0 4px; }
   .legend i { display:inline-block; width:16px; height:3px; border-radius:2px; margin-right:6px; vertical-align:middle; }
   .why { font-size:11px; color:var(--muted); margin:8px 0 0; line-height:1.45; text-align:left; }
-  header { border-bottom:none; }
-  header h1 { font-size:22px; letter-spacing:-.01em; }
   .theme-toggle { background:var(--blue); color:var(--button-text); border:0; border-radius:999px;
                   padding:8px 16px; font-weight:600; font-size:13px; font-family:inherit; cursor:pointer; }
   .theme-toggle:hover { opacity:.9; }
-  details summary { cursor:pointer; color:var(--muted); font-size:12px; }
 </style>
 </head>
 <body>
@@ -280,15 +273,6 @@ function plainCard(v, label, sub, d = 2, why = "") {
   return `<div class="card"><div class="val${v == null ? " na" : ""}">${v == null ? "n/a" : fmt(v, d)}</div><div class="name">${label}</div><div class="sub">${sub}</div>${why ? `<p class="why"><em>${why}</em></p>` : ""}</div>`;
 }
 
-function termBars(items) {
-  const vals = items.map(i => i.v).filter(v => v != null);
-  const max = vals.length ? Math.max(...vals) * 1.1 : 1;
-  return `<div class="bars">${items.map(i => i.v == null
-    ? `<div class="bar-row"><div>${i.k}</div><div class="bar-track"></div><div class="bar-val na">n/a</div></div>`
-    : `<div class="bar-row"><div>${i.k}</div><div class="bar-track"><div class="bar-fill" style="width:${(i.v / max * 100).toFixed(1)}%"></div></div><div class="bar-val">${fmt(i.v)}</div></div>`
-  ).join("")}</div>`;
-}
-
 // Term structure: one curve per date. x = days to expiry, y = VIX level.
 // curves = [{ name, color, dash, labels, pts: [{ k, days, v }] }]; pts align by index.
 function termCurves(curves) {
@@ -336,88 +320,102 @@ function sparkSVG(vals, color) {
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/></svg>`;
 }
 
+// =====================================================================
+// Schedule (cron in UTC, displayed in Eastern time)
+// =====================================================================
 // Expands one cron field ("*", "A,B", "A-B", "*/N", "A-B/N") into the values it matches.
-  function parseField(field, min, max) {
-      const out = new Set();
-      const add = (a, b, s = 1) => { for (let v = a; v <= b; v += s) out.add(v); };
-      for (const part of String(field).trim().split(",")) {
-            const m = part.match(/^(\*|\d+)(?:-(\d+))?(?:\/(\d+))?$/);
-            if (!m) continue;
-            const step = m[3] ? +m[3] : 1;
-            if (m[1] === "*") add(min, max, step);
-            else if (m[2]) add(+m[1], +m[2], step);
-            else if (m[3]) add(+m[1], max, step);
-            else out.add(+m[1]);
-      }
-      return out;
+function parseField(field, min, max) {
+  const out = new Set();
+  const add = (a, b, s = 1) => { for (let v = a; v <= b; v += s) out.add(v); };
+  for (const part of String(field).trim().split(",")) {
+    const m = part.match(/^(\*|\d+)(?:-(\d+))?(?:\/(\d+))?$/);
+    if (!m) continue;
+    const step = m[3] ? +m[3] : 1;
+    if (m[1] === "*") add(min, max, step);
+    else if (m[2]) add(+m[1], +m[2], step);
+    else if (m[3]) add(+m[1], max, step);
+    else out.add(+m[1]);
   }
-  // The schedule from schedule_cron in series.json, parsed once.
-  let scheduleCron = "";
-  let schedule = null;
-  function parseSchedule(c) {
-      if (c === scheduleCron && schedule) return schedule;
-      scheduleCron = c;
-      if (!c) { schedule = null; return null; }
-      const [min, hr , dow] = c.trim().split(/\s+/);
-      schedule = { minutes: parseField(min, 0, 59), hours: parseField(hr, 0, 23), weekdays: parseField(dow, 0, 6) };
-      return schedule;
-  }
-  // Formats a UTC hour/minute as an Eastern time, e.g. "5:30 AM".
-  function etTime(utcHour, minute) {
-      const d = new Date();
-      d.setUTCHours(utcHour, minute, 0, 0);
-      return new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" }).format(d);
-  }
+  return out;
+}
 
-  // Short Eastern zone name ("EST" / "EDT") for a date.
-  function etZoneName(d) {
-      const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", timeZoneName: "short" }).formatToParts(d).find(x => x.type === "timeZoneName");
-      return p ? p.value : "";
-  }
+// The schedule from schedule_cron in series.json, parsed once.
+let scheduleCron = "";
+let schedule = null;
+function parseSchedule(c) {
+  if (c === scheduleCron && schedule) return schedule;
+  scheduleCron = c;
+  if (!c) { schedule = null; return null; }
+  const [min, hr, dow] = c.trim().split(/\s+/);
+  schedule = { minutes: parseField(min, 0, 59), hours: parseField(hr, 0, 23), weekdays: parseField(dow, 0, 6) };
+  return schedule;
+}
 
-  // Turns a cron expression (in UTC) into a readable update schedule in Eastern time.
-  function describeCron(c) {
-      const s = parseSchedule(c);
-      if (!s) return "schedule not available yet";
-      const minute = [..s.minutes].sort((a, b) => a - b)[0] ?? 0;
-      const hours = [..s.hours].sort((a, b) => a - b);
-      const probe = new Date();
-      probe.setUTCHours(hours[0], minute, 0, 0);
-      const zone = etZoneName(probe);
-      const days =  [..s.weekdays].sort((a, b) => a - b).join(",") === "1,2,3,4,5" ? "weekdays" : s.weekdays.size === 7 ? "every day" : "";
-      const times = hours.map(h => etTime(h, minute));
-      const last = times[times.length - 1];
-      const at = times.length > 1 ? `${times.slice(0, -1).map(t => t.replace(/\s?[AP]M$/, "").join(", "), ${last}` : last;
-      const count = s.hours.size;
-      return `Updates ${count} ${count === 1 ? "time" : "times"} a day${days ? `, ${days}` : ""} at ${at}${zone ? ` ${zone}` : ""}`;
-  }
+// Formats a UTC hour/minute as an Eastern time, e.g. "5:30 AM".
+function etTime(utcHour, minute) {
+  const d = new Date();
+  d.setUTCHours(utcHour, minute, 0, 0);
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", hour: "numeric", minute: "2-digit" }).format(d);
+}
 
-  // True when a UTC date is a scheduled run: matching minute, hour and weekday.
-  function cronMatch(date) {
-      if (!schedule) return false;
-      return schedule.minutes.has(date.getUTCMinutes()) && schedule.hours.has(date.getUTCHours()) && schedule.weekdays.has(date.getUTCDay());
-  }
+// Short Eastern zone name ("EST" / "EDT") for a date.
+function etZoneName(d) {
+  const p = new Intl.DateTimeFormat("en-US", { timeZone: "America/Toronto", timeZoneName: "short" })
+    .formatToParts(d).find(x => x.type === "timeZoneName");
+  return p ? p.value : "";
+}
 
-  // Next UTC time the cron expression fires, after `from`. Cron hours and days are UTC.
-  function nextRun(c, from = new Date()) {
-      if (!parseSchedule(c)) return null;
-      const t = new Date(from.getTime());
-      t.setUTCSeconds(0, 0);
-      t.setUTCMinutes(t.getUTCMinutes() + 1);
-      for (let i = 0; i < 60 * 24 * 10; i++) {
-            if (cronMatch(t)) return t;
-            t.setUTCMinutes(t.getUTCMinutes() + 1);
-      }
-      return null;
+// Turns a cron expression (in UTC) into a readable update schedule in Eastern time.
+function describeCron(c) {
+  const s = parseSchedule(c);
+  if (!s) return "schedule not available yet";
+  const minute = [...s.minutes].sort((a, b) => a - b)[0] ?? 0;
+  const hours = [...s.hours].sort((a, b) => a - b);
+  const probe = new Date();
+  probe.setUTCHours(hours[0], minute, 0, 0);
+  const zone = etZoneName(probe);
+  const weekdaysSorted = [...s.weekdays].sort((a, b) => a - b).join(",");
+  const days = weekdaysSorted === "1,2,3,4,5" ? "weekdays" : s.weekdays.size === 7 ? "every day" : "";
+  const times = hours.map(h => etTime(h, minute));
+  const last = times[times.length - 1];
+  const at = times.length > 1
+    ? `${times.slice(0, -1).map(t => t.replace(/\s?[AP]M$/, "")).join(", ")} and ${last}`
+    : last;
+  const count = s.hours.size;
+  return `Updates ${count} ${count === 1 ? "time" : "times"} a day${days ? `, ${days}` : ""} at ${at}${zone ? ` ${zone}` : ""}`;
+}
+
+// True when a UTC date is a scheduled run: matching minute, hour and weekday.
+function cronMatch(date) {
+  if (!schedule) return false;
+  return schedule.minutes.has(date.getUTCMinutes()) &&
+         schedule.hours.has(date.getUTCHours()) &&
+         schedule.weekdays.has(date.getUTCDay());
+}
+
+// Next UTC time the cron expression fires, strictly after `from`.
+function nextRun(c, from = new Date()) {
+  if (!parseSchedule(c)) return null;
+  const t = new Date(from.getTime());
+  t.setUTCSeconds(0, 0);
+  t.setUTCMinutes(t.getUTCMinutes() + 1);
+  for (let i = 0; i < 60 * 24 * 10; i++) {
+    if (cronMatch(t)) return t;
+    t.setUTCMinutes(t.getUTCMinutes() + 1);
   }
-  
-    
-  let countdownTimer = null;
+  return null;
+}
+
+let countdownTimer = null;
+let countdownCron = null;
+let reloadScheduled = false;
+
 function startCountdown(c) {
   clearInterval(countdownTimer);
+  countdownCron = c;
+  reloadScheduled = false;
   const el = document.getElementById("countdown");
-  const next = c ? nextRun(c) : null;
-  if (!next) { el.textContent = ""; return; }
+  if (!nextRun(c)) { el.textContent = ""; return; }
 
   const fmtLeft = ms => {
     const s = Math.max(0, Math.floor(ms / 1000));
@@ -425,16 +423,21 @@ function startCountdown(c) {
     const pad = n => String(n).padStart(2, "0");
     return h ? `${h}h ${pad(m)}m ${pad(sec)}s` : `${m}m ${pad(sec)}s`;
   };
+
   const tick = () => {
-        const now = new Date();
-        const ms = cronMatch(now)? 0: next - now;
-    if (ms <= 0) {
+    const now = new Date();
+    const next = nextRun(countdownCron, now);
+    if (!next) { el.textContent = ""; return; }
+    const ms = next - now;
+
+    // Within the first minute of a scheduled run: show that the run is in progress.
+    if (cronMatch(now) && now.getUTCSeconds() < 60 && !reloadScheduled) {
       el.textContent = "Next update: running now…";
-      clearInterval(countdownTimer);
-      setTimeout(load, 90000);   // give the workflow time to finish, then reload the data
+      reloadScheduled = true;
+      setTimeout(() => { reloadScheduled = false; load(); }, 90000);
       return;
     }
-        el.textContent = `Next update in ${fmtLeft(ms)}, at ${etTime(next.getUTCHours(), next.getUTCMinutes())} ${etZoneName(next)}`;
+    el.textContent = `Next update in ${fmtLeft(ms)}, at ${etTime(next.getUTCHours(), next.getUTCMinutes())} ${etZoneName(next)}`;
   };
   tick();
   countdownTimer = setInterval(tick, 1000);
@@ -501,10 +504,9 @@ async function load() {
   const gIvp = ivpStats ? { ...ivpStats, current: ivpSeries[ivpSeries.length - 1] } : null;
   if (gIvp) gIvp.pct = gIvp.hi52 > gIvp.lo52 ? 100 * (gIvp.current - gIvp.lo52) / (gIvp.hi52 - gIvp.lo52) : 50;
 
-  const last = k => d(k) ? d(k)[d(k).length - 1].v : null;
   const gFor = k => { const p = d(k) || []; return rangeStats(p.map(x => x.v), p.map(x => x.d)); };
 
-  // Term points for a given date, taken from the saved history. Returns null if no reading is within 7 days.
+  // Term points for a given date, taken from the saved history. Null if no reading is within 7 days.
   const lastD = dates[n - 1];
   const dateShift = days => {
     const t = new Date(lastD + "T00:00:00Z");
@@ -533,7 +535,7 @@ async function load() {
     `<section><h2>${title}</h2>${body}${note ? `<p class="note">${note}</p>` : ""}</section>`;
 
   meta.textContent = `Data as of ${dates[n - 1]}` +
-      (updated? ` · updated ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Toronto", timeZoneName: "short"}).format(new Date(updated))}`: "") +
+    (updated ? ` · updated ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Toronto", timeZoneName: "short" }).format(new Date(updated))}` : "") +
     " · gauges show 52-week low/high · dotted needle = 1 month ago";
 
   app.innerHTML = [
